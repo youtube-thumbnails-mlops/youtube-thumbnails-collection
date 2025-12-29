@@ -85,7 +85,7 @@ jobs:
             (git commit -m "Daily collection: $(date +%Y-%m-%d) [skip ci]" && git push)
 
       # Step 4b: Rotation flow (>= 500 samples) - Archive batch + reset current/
-      - name: Handle rotation
+      - name: Handle rotation with rolling window
         if: steps.check_rotation.outputs.needs_rotation == 'true'
         working-directory: dataset
         run: |
@@ -101,8 +101,37 @@ jobs:
           mkdir -p current
           dvc add current/
 
-          # Push both: new batch and empty current/
+          # Push the NEW batch to R2
           dvc push
+
+          # --- ROLLING WINDOW CLEANUP ---
+          # Config: Keep only the 2 most recent batches (TEST MODE!)
+          MAX_BATCHES=2
+
+          # Count existing batch .dvc files
+          BATCH_COUNT=$(ls batches/batch_*.dvc 2>/dev/null | wc -l)
+
+          if [ "$BATCH_COUNT" -gt "$MAX_BATCHES" ]; then
+            echo "⚠️ Limit reached ($BATCH_COUNT > $MAX_BATCHES). Pruning oldest batch..."
+
+            # Find oldest batch (sorted by name: batch_001, batch_002, etc.)
+            OLDEST_BATCH=$(ls batches/batch_*.dvc | sort | head -n 1)
+            OLDEST_NAME=$(basename "$OLDEST_BATCH" .dvc)
+
+            echo "Removing $OLDEST_NAME from tracking..."
+
+            # Remove from DVC tracking and delete .dvc file
+            dvc remove "$OLDEST_BATCH"
+
+            # Delete from R2 using garbage collection
+            echo "Running DVC garbage collection to delete from R2..."
+            dvc gc --workspace --cloud --force
+
+            echo "✅ $OLDEST_NAME deleted from R2 and local tracking"
+          else
+            echo "📊 Batch count: $BATCH_COUNT/$MAX_BATCHES (no cleanup needed)"
+          fi
+          # -----------------------------------
 
           # Clean up flag
           rm .rotate
@@ -116,13 +145,16 @@ jobs:
 
           BATCH_NAME="${{ steps.check_rotation.outputs.batch_name }}"
 
-          # Add .dvc files and any .gitignore changes
+          # Add new batch .dvc file and current.dvc
           git add current.dvc "batches/$BATCH_NAME.dvc" .gitignore
+
+          # Capture deletions (if we pruned an old batch)
+          git add -u
 
           # Extract batch number from batch name for version tag
           BATCH_NUM=$(echo "$BATCH_NAME" | grep -oE '[0-9]+')
           BATCH_VERSION="v${BATCH_NUM}.0"
 
-          git commit -m "Batch rotation: $BATCH_NAME archived [skip ci]"
+          git commit -m "Batch rotation: $BATCH_NAME archived (rolling window) [skip ci]"
           git tag $BATCH_VERSION
           git push origin main --tags

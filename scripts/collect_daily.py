@@ -10,7 +10,7 @@ from pathlib import Path
 from youtube_collector import YouTubeClient
 
 # CONSTANTS
-BATCH_LIMIT = 500  # <--- Change this if you want larger batches
+BATCH_LIMIT = 500
 
 def count_samples(metadata_file):
     """Count total samples in metadata CSV."""
