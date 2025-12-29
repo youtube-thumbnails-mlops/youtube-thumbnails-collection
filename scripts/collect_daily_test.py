@@ -1,16 +1,20 @@
 """
 TEST MODE: Daily data collection script.
 Configured for minimal downloads and fast rotation.
+Includes W&B logging with resized images.
 """
 import os
 import sys
+import wandb
 from pathlib import Path
+from PIL import Image
 from youtube_collector import YouTubeClient
 
 # --- TEST CONFIGURATION ---
 BATCH_LIMIT = 3          # Rotate after just 3 images!
 TEST_CATEGORY = ['20']   # Only search 'Gaming' (saves 90% quota)
 TEST_REGION = "US"       # Only search 'US' (saves 90% quota)
+MAX_WANDB_RUNS = 2       # Match test MAX_BATCHES for consistency
 # --------------------------
 
 def count_samples(metadata_file):
@@ -24,7 +28,7 @@ def get_next_batch_number(batches_dir):
     """Find the next batch number by counting .dvc files."""
     batches_dir.mkdir(exist_ok=True)
     existing_dvc_files = list(batches_dir.glob("batch_*.dvc"))
-    
+
     if existing_dvc_files:
         versions = []
         for dvc_file in existing_dvc_files:
@@ -38,6 +42,31 @@ def get_next_batch_number(batches_dir):
             return max(versions) + 1
     return 1
 
+def calculate_metrics(video):
+    title = video.get('title', '')
+    views = video.get('views', 0)
+    subs = max(video.get('channel_subscribers', 1), 1)
+    ratio = views / subs
+    caps_count = sum(1 for c in title if c.isupper())
+    is_clickbait = 1 if ("!" in title or "?" in title or (len(title) > 0 and caps_count/len(title) > 0.5)) else 0
+    return ratio, len(title), is_clickbait
+
+def prune_old_wandb_runs(project_name, max_runs):
+    """Deletes oldest runs to keep W&B storage inside the 5GB limit."""
+    try:
+        api = wandb.Api()
+        runs = api.runs(path=f"{api.default_entity}/{project_name}")
+        if len(runs) > max_runs:
+            runs_to_delete = len(runs) - max_runs
+            print(f"🧹 W&B Pruning: Found {len(runs)} runs. Deleting {runs_to_delete} oldest...")
+            sorted_runs = sorted(runs, key=lambda run: run.created_at)
+            for i in range(runs_to_delete):
+                print(f"   - Deleting run: {sorted_runs[i].name}")
+                sorted_runs[i].delete()
+            print("✅ W&B Pruning Complete.")
+    except Exception as e:
+        print(f"⚠️ W&B Pruning failed: {e}")
+
 def main():
     client = YouTubeClient()
 
@@ -45,7 +74,12 @@ def main():
     batches_dir = Path("batches")
     current_dir.mkdir(exist_ok=True)
 
-    # 1. Fetch minimal videos (Low Quota Usage)
+    # 1. Setup Versioning
+    next_batch_num = get_next_batch_number(batches_dir)
+    target_batch_name = f"batch_{next_batch_num:03d}"
+    print(f"🎯 Target Version: {target_batch_name}")
+
+    # 2. Fetch minimal videos (Low Quota Usage)
     print("🧪 RUNNING IN TEST MODE")
     print("Fetching ~1-2 videos...")
 
@@ -64,19 +98,69 @@ def main():
         print("No videos found. (This happens sometimes in strict test mode).")
         sys.exit(0)
 
-    # 2. Download
+    # 3. Download
     print(f"\n⬇️ Downloading {len(videos)} thumbnails to current/...")
     client.download_thumbnails_bulk(
         videos,
         output_dir=str(current_dir)
     )
 
-    # 3. Save Metadata
+    # 4. Save Metadata
     metadata_file = current_dir / "metadata.csv"
     client.save_to_csv(videos, filename=str(metadata_file))
     print(f"✓ Appended {len(videos)} videos")
 
-    # 4. Check Rotation
+    # 5. Log to W&B (Resized for Storage)
+    try:
+        print("🚀 Logging to Weights & Biases (Compressed)...")
+        wandb.login(key=os.getenv("WANDB_API_KEY"))
+
+        run = wandb.init(
+            project="youtube-thumbnails-dataset",
+            job_type="test_collection",
+            tags=["test", "daily", target_batch_name],
+            config={"batch_version": target_batch_name, "mode": "test"}
+        )
+
+        table = wandb.Table(columns=[
+            "thumbnail", "title", "views", "subscribers",
+            "viral_ratio", "title_length", "is_clickbait",
+            "category", "video_id", "batch_version"
+        ])
+
+        for video in videos:
+            img_path = current_dir / f"{video['video_id']}.jpg"
+            if img_path.exists():
+                ratio, t_len, clickbait = calculate_metrics(video)
+
+                # --- RESIZING MAGIC ---
+                with Image.open(img_path) as im:
+                    # Convert to RGB
+                    im = im.convert('RGB')
+                    # Resize to fit within a 400x400 box, MAINTAINING aspect ratio.
+                    # A typical 16:9 thumbnail will become roughly 400x225 pixels.
+                    # This happens in RAM, doesn't touch the file on disk.
+                    im.thumbnail((400, 400))
+
+                    table.add_data(
+                        wandb.Image(im),
+                        video['title'], video['views'], video['channel_subscribers'],
+                        ratio, t_len, clickbait, video['category_name'],
+                        video['video_id'], target_batch_name
+                    )
+                # ----------------------
+
+        wandb.log({"collected_batch": table})
+        wandb.finish()
+        print("✅ W&B Logging Complete")
+
+        # Prune W&B (Keep in sync with test MAX_BATCHES=2)
+        prune_old_wandb_runs("youtube-thumbnails-dataset", max_runs=MAX_WANDB_RUNS)
+
+    except Exception as e:
+        print(f"⚠️ W&B Logging/Pruning failed: {e}")
+
+    # 6. Check Rotation
     total = count_samples(metadata_file)
     print(f"📊 Total in current/: {total}/{BATCH_LIMIT}")
 
@@ -84,7 +168,7 @@ def main():
         next_batch = get_next_batch_number(batches_dir)
         rotate_flag = Path(".rotate")
         rotate_flag.write_text(f"batch_{next_batch:03d}")
-        
+
         print(f"\n🔄 TEST ROTATION TRIGGERED")
         print(f"📝 Flag created: .rotate → batch_{next_batch:03d}")
     else:

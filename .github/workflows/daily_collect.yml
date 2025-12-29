@@ -29,7 +29,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e libs/youtube_collector
-          pip install python-dotenv
+          pip install python-dotenv wandb Pillow
 
       - name: Configure DVC
         working-directory: dataset
@@ -48,6 +48,7 @@ jobs:
       - name: Run daily collection
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
         working-directory: dataset
         run: python ../scripts/collect_daily_test.py
 
