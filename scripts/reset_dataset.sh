@@ -5,7 +5,8 @@
 # 2. Removes all git tags
 # 3. Resets dataset repo to clean commit
 # 4. Cleans R2 bucket completely
-# 5. Force pushes clean state to GitHub
+# 5. Cleans W&B runs completely
+# 6. Force pushes clean state to GitHub
 
 set -e  # Exit on error
 
@@ -122,7 +123,56 @@ PYTHON_EOF
 deactivate
 echo ""
 
-# 5. Force push to GitHub
+# 5. Clean W&B runs
+echo "🧹 Cleaning W&B runs..."
+
+# Install wandb if not already installed
+pip show wandb >/dev/null 2>&1 || pip install -q wandb
+
+python3 << 'PYTHON_EOF'
+import os
+
+# Load WANDB_API_KEY from .env
+env_vars = {}
+if os.path.exists('.env'):
+    with open('.env', 'r') as f:
+        for line in f:
+            if '=' in line and not line.startswith('#'):
+                key, value = line.strip().split('=', 1)
+                env_vars[key] = value
+else:
+    print("   ⚠️  .env file not found. Skipping W&B cleanup.")
+    exit(0)
+
+wandb_key = env_vars.get('WANDB_API_KEY', '')
+
+if not wandb_key:
+    print("   ⚠️  WANDB_API_KEY not found in .env. Skipping W&B cleanup.")
+    exit(0)
+
+try:
+    import wandb
+    wandb.login(key=wandb_key)
+
+    api = wandb.Api()
+    project_name = "youtube-thumbnails-dataset"
+    runs = api.runs(path=f"{api.default_entity}/{project_name}")
+
+    if len(runs) > 0:
+        print(f"   Deleting {len(runs)} W&B runs...")
+        for run in runs:
+            print(f"   - Deleting run: {run.name}")
+            run.delete()
+        print(f"   ✅ Deleted {len(runs)} runs")
+    else:
+        print("   ℹ️  No W&B runs to delete")
+except Exception as e:
+    print(f"   ⚠️  W&B cleanup failed: {e}")
+PYTHON_EOF
+
+echo ""
+
+# 6. Force push to GitHub
 echo "🚀 Force pushing clean state to GitHub..."
 read -p "   ⚠️  This will FORCE PUSH to GitHub. Continue? (y/N): " confirm
 if [[ $confirm == [yY] ]]; then
@@ -141,6 +191,7 @@ echo "  - Local data: Cleaned"
 echo "  - Git tags: Removed"
 echo "  - Git commit: $CLEAN_COMMIT"
 echo "  - R2 bucket: Empty"
+echo "  - W&B runs: Deleted"
 echo "  - GitHub: $(if [[ $confirm == [yY] ]]; then echo 'Updated'; else echo 'Not updated (manual push needed)'; fi)"
 echo ""
 echo "You can now trigger the workflow to start fresh!"
