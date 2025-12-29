@@ -52,7 +52,6 @@ jobs:
         working-directory: dataset
         run: python ../scripts/pipeline_collect_daily.py
 
-      # Step 3: Check if rotation needed
       # Step 3: Manage Rotation (Check + Rotate + Prune)
       - name: Manage Batch Rotation
         id: rotation_manager

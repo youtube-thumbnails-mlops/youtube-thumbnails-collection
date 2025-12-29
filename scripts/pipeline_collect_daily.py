@@ -8,6 +8,7 @@ import os
 import sys
 import wandb
 from pathlib import Path
+import math
 from PIL import Image
 from youtube_collector import YouTubeClient
 
@@ -31,13 +32,18 @@ def get_next_batch_number(batches_dir):
     return 1
 
 def calculate_metrics(video):
-    title = video.get('title', '')
-    views = video.get('views', 0)
-    subs = max(video.get('channel_subscribers', 1), 1)
-    ratio = views / subs
-    caps_count = sum(1 for c in title if c.isupper())
-    is_clickbait = 1 if ("!" in title or "?" in title or (len(title) > 0 and caps_count/len(title) > 0.5)) else 0
-    return ratio, len(title), is_clickbait
+    # Calculate baseline (Average views per video for this channel)
+    total_views = float(video.get('channel_total_views', 0))
+    video_count = max(float(video.get('channel_video_count', 1)), 1.0)
+    avg_views = total_views / video_count
+    
+    # Calculate Log-Difference
+    # Log10(Video Views) - Log10(Average Channel Views)
+    # > 0 means video outperformed channel average
+    log_views = math.log10(float(video.get('views', 0)) + 1)
+    log_baseline = math.log10(avg_views + 1)
+    
+    return log_views - log_baseline
 
 def prune_old_wandb_runs(project_name, max_runs):
     """Deletes oldest runs to keep W&B storage inside the 5GB limit."""
@@ -83,6 +89,16 @@ def main():
     print(f"⬇️ Downloading {len(videos)} HQ thumbnails...")
     client.download_thumbnails_bulk(videos, output_dir=str(current_dir))
 
+    for video in videos:
+        ratio = calculate_metrics(video)
+        video['viral_ratio'] = ratio
+        # batch_version is added during W&B log step usually, 
+        # but if we want it in CSV, we should add it here.
+        # However, the original code had it only in W&B.
+        # User asked for SAME columns. W&B has 'batch_version'.
+        video['batch_version'] = target_batch_name
+        # is_clickbait is REMOVED.
+
     metadata_file = current_dir / "metadata.csv"
     client.save_to_csv(videos, filename=str(metadata_file))
 
@@ -104,13 +120,13 @@ def main():
             "channel_id", "channel_subscribers", "channel_total_views", "channel_video_count",
             "tags", "description_len", "duration_seconds", "definition", "language",
             "published_at", "captured_at", "video_url", "thumbnail_url",
-            "viral_ratio", "title_length", "is_clickbait", "batch_version"
+            "viral_ratio", "batch_version"
         ])
 
         for video in videos:
             img_path = current_dir / f"{video['video_id']}.jpg"
             if img_path.exists():
-                ratio, t_len, clickbait = calculate_metrics(video)
+                # Metrics already calculated and in 'video' dict
 
                 # --- RESIZING MAGIC ---
                 with Image.open(img_path) as im:
@@ -131,7 +147,7 @@ def main():
                         video['definition'], video['language'],
                         video['published_at'], video['captured_at'],
                         video['video_url'], video['thumbnail_url'],
-                        ratio, t_len, clickbait, target_batch_name
+                        video['viral_ratio'], target_batch_name
                     )
                 # ----------------------
 
