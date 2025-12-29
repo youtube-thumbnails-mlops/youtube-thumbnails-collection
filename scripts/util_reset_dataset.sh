@@ -64,7 +64,7 @@ if [ ! -d "venv" ]; then
 else
     source venv/bin/activate
     # Install boto3 if not already installed
-    pip show boto3 >/dev/null 2>&1 || pip install -q boto3
+    pip show boto3 >/dev/null 2>&1 || python3 -m pip install -q boto3
 fi
 
 python3 << 'PYTHON_EOF'
@@ -127,7 +127,9 @@ echo ""
 echo "🧹 Cleaning W&B runs..."
 
 # Install wandb if not already installed
-pip show wandb >/dev/null 2>&1 || pip install -q wandb
+# Reuse venv from R2 step
+source venv/bin/activate
+pip show wandb >/dev/null 2>&1 || python3 -m pip install -q wandb
 
 python3 << 'PYTHON_EOF'
 import os
