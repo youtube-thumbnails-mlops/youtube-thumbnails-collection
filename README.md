@@ -2,6 +2,13 @@
 
 Automated daily collection of YouTube thumbnails with DVC versioning and W&B logging.
 
+**Services:**
+- **Data Collection**: YouTube Data API v3
+- **Storage**: Cloudflare R2 (S3-compatible object storage)
+- **Versioning**: DVC (Data Version Control)
+- **Visualization**: Weights & Biases (W&B)
+- **Automation**: GitHub Actions
+
 ## What This Does
 
 Daily at 8 AM UTC (or manual trigger):
@@ -65,4 +72,4 @@ Add GitHub Secrets:
 
 ## Related
 
-- [youtube-thumbnails-dataset](https://github.com/YOUR_ORG/youtube-thumbnails-dataset) - DVC data repo
+- [youtube-thumbnails-dataset](https://github.com/youtube-thumbnails-mlops/youtube-thumbnails-dataset) - DVC data repo
