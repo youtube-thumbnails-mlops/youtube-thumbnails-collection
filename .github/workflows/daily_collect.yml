@@ -1,0 +1,128 @@
+name: Daily Data Collection
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # 8 AM UTC daily
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code repo
+        uses: actions/checkout@v4
+
+      - name: Checkout dataset repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/youtube-thumbnails-dataset
+          token: ${{ secrets.DATASET_REPO_TOKEN }}
+          path: dataset
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install -e libs/youtube_collector
+          pip install python-dotenv
+
+      - name: Configure DVC
+        working-directory: dataset
+        run: |
+          pip install dvc[s3]
+          dvc remote modify origin --local endpointurl ${{ secrets.R2_ENDPOINT }}
+          dvc remote modify origin --local access_key_id ${{ secrets.R2_ACCESS_KEY_ID }}
+          dvc remote modify origin --local secret_access_key ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+      # Step 1: Pull ONLY current/ (small, max 500 images)
+      - name: Pull current/ from R2
+        working-directory: dataset
+        run: dvc pull current.dvc || echo "No current/ data yet"
+
+      # Step 2: Run collection
+      - name: Run daily collection
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        working-directory: dataset
+        run: python ../scripts/collect_daily_test.py
+
+      # Step 3: Check if rotation needed
+      - name: Check for rotation flag
+        id: check_rotation
+        working-directory: dataset
+        run: |
+          if [ -f .rotate ]; then
+            BATCH_NAME=$(cat .rotate)
+            echo "needs_rotation=true" >> $GITHUB_OUTPUT
+            echo "batch_name=$BATCH_NAME" >> $GITHUB_OUTPUT
+            echo "Rotation needed: $BATCH_NAME"
+          else
+            echo "needs_rotation=false" >> $GITHUB_OUTPUT
+            echo "No rotation needed"
+          fi
+
+      # Step 4a: Normal flow (< 500 samples) - Just update current/
+      - name: Push current/ to R2 (no rotation)
+        if: steps.check_rotation.outputs.needs_rotation == 'false'
+        working-directory: dataset
+        run: |
+          dvc add current/
+          dvc push
+
+      - name: Commit current.dvc (no rotation)
+        if: steps.check_rotation.outputs.needs_rotation == 'false'
+        working-directory: dataset
+        run: |
+          git config user.name 'GitHub Action'
+          git config user.email 'action@github.com'
+          git add current.dvc .gitignore
+          git diff --quiet && git diff --staged --quiet || \
+            (git commit -m "Daily collection: $(date +%Y-%m-%d) [skip ci]" && git push)
+
+      # Step 4b: Rotation flow (>= 500 samples) - Archive batch + reset current/
+      - name: Handle rotation
+        if: steps.check_rotation.outputs.needs_rotation == 'true'
+        working-directory: dataset
+        run: |
+          BATCH_NAME="${{ steps.check_rotation.outputs.batch_name }}"
+          BATCH_PATH="batches/$BATCH_NAME"
+
+          echo "Moving current/ → $BATCH_PATH using DVC..."
+
+          # DVC move handles both file move and .dvc update atomically
+          dvc move current "$BATCH_PATH"
+
+          # Create fresh empty current/ and track it
+          mkdir -p current
+          dvc add current/
+
+          # Push both: new batch and empty current/
+          dvc push
+
+          # Clean up flag
+          rm .rotate
+
+      - name: Commit after rotation
+        if: steps.check_rotation.outputs.needs_rotation == 'true'
+        working-directory: dataset
+        run: |
+          git config user.name 'GitHub Action'
+          git config user.email 'action@github.com'
+
+          BATCH_NAME="${{ steps.check_rotation.outputs.batch_name }}"
+
+          # Add .dvc files and any .gitignore changes
+          git add current.dvc "batches/$BATCH_NAME.dvc" .gitignore
+
+          # Extract batch number from batch name for version tag
+          BATCH_NUM=$(echo "$BATCH_NAME" | grep -oE '[0-9]+')
+          BATCH_VERSION="v${BATCH_NUM}.0"
+
+          git commit -m "Batch rotation: $BATCH_NAME archived [skip ci]"
+          git tag $BATCH_VERSION
+          git push origin main --tags

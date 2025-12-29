@@ -1,0 +1,62 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  detect-changes:
+    name: Detect changed libraries
+    runs-on: ubuntu-latest
+    outputs:
+      libraries: ${{ steps.changes.outputs.libraries }}
+      has-changes: ${{ steps.changes.outputs.has-changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed libraries
+        id: changes
+        run: |
+          # Get changed files in PR and extract library names
+          CHANGED_LIBS=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep '^libs/' | cut -d'/' -f2 | sort -u)
+
+          if [ -z "$CHANGED_LIBS" ]; then
+            echo "has-changes=false" >> $GITHUB_OUTPUT
+            echo "libraries=[]" >> $GITHUB_OUTPUT
+          else
+            echo "has-changes=true" >> $GITHUB_OUTPUT
+            # Convert to JSON array
+            LIBS_JSON=$(echo "$CHANGED_LIBS" | jq -R -s -c 'split("\n")[:-1]')
+            echo "libraries=$LIBS_JSON" >> $GITHUB_OUTPUT
+            echo "Changed libraries: $LIBS_JSON"
+          fi
+
+  test:
+    name: Run tests for ${{ matrix.library }}
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has-changes == 'true'
+    strategy:
+      matrix:
+        library: ${{ fromJson(needs.detect-changes.outputs.libraries) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e libs/${{ matrix.library }}[dev]
+
+      - name: Run tests
+        run: |
+          cd libs/${{ matrix.library }}
+          pytest tests/ -v --cov=${{ matrix.library }} --cov-report=xml --cov-report=term
