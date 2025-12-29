@@ -99,9 +99,12 @@ def main():
         )
 
         table = wandb.Table(columns=[
-            "thumbnail", "title", "views", "subscribers",
-            "viral_ratio", "title_length", "is_clickbait",
-            "category", "video_id", "batch_version"
+            "thumbnail", "video_id", "title", "category_id", "category_name",
+            "views", "likes", "comments",
+            "channel_id", "channel_subscribers", "channel_total_views", "channel_video_count",
+            "tags", "description_len", "duration_seconds", "definition", "language",
+            "published_at", "captured_at", "video_url", "thumbnail_url",
+            "viral_ratio", "title_length", "is_clickbait", "batch_version"
         ])
 
         for video in videos:
@@ -120,9 +123,15 @@ def main():
 
                     table.add_data(
                         wandb.Image(im),
-                        video['title'], video['views'], video['channel_subscribers'],
-                        ratio, t_len, clickbait, video['category_name'],
-                        video['video_id'], target_batch_name
+                        video['video_id'], video['title'], video['category_id'], video['category_name'],
+                        video['views'], video['likes'], video['comments'],
+                        video['channel_id'], video['channel_subscribers'],
+                        video['channel_total_views'], video['channel_video_count'],
+                        video['tags'], video['description_len'], video['duration_seconds'],
+                        video['definition'], video['language'],
+                        video['published_at'], video['captured_at'],
+                        video['video_url'], video['thumbnail_url'],
+                        ratio, t_len, clickbait, target_batch_name
                     )
                 # ----------------------
 
