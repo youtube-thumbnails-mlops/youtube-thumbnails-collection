@@ -50,33 +50,25 @@ jobs:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
         working-directory: dataset
-        run: python ../scripts/collect_daily.py
+        run: python ../scripts/pipeline_collect_daily.py
 
       # Step 3: Check if rotation needed
-      - name: Check for rotation flag
-        id: check_rotation
+      # Step 3: Manage Rotation (Check + Rotate + Prune)
+      - name: Manage Batch Rotation
+        id: rotation_manager
         working-directory: dataset
-        run: |
-          if [ -f .rotate ]; then
-            BATCH_NAME=$(cat .rotate)
-            echo "needs_rotation=true" >> $GITHUB_OUTPUT
-            echo "batch_name=$BATCH_NAME" >> $GITHUB_OUTPUT
-            echo "Rotation needed: $BATCH_NAME"
-          else
-            echo "needs_rotation=false" >> $GITHUB_OUTPUT
-            echo "No rotation needed"
-          fi
+        run: python ../scripts/pipeline_rotate_batch.py
 
       # Step 4a: Normal flow (< 500 samples) - Just update current/
       - name: Push current/ to R2 (no rotation)
-        if: steps.check_rotation.outputs.needs_rotation == 'false'
+        if: steps.rotation_manager.outputs.needs_rotation == 'false'
         working-directory: dataset
         run: |
           dvc add current/
           dvc push
 
       - name: Commit current.dvc (no rotation)
-        if: steps.check_rotation.outputs.needs_rotation == 'false'
+        if: steps.rotation_manager.outputs.needs_rotation == 'false'
         working-directory: dataset
         run: |
           git config user.name 'GitHub Action'
@@ -86,65 +78,16 @@ jobs:
             (git commit -m "Daily collection: $(date +%Y-%m-%d) [skip ci]" && git push)
 
       # Step 4b: Rotation flow (>= 500 samples) - Archive batch + reset current/
-      - name: Handle rotation with rolling window
-        if: steps.check_rotation.outputs.needs_rotation == 'true'
-        working-directory: dataset
-        run: |
-          BATCH_NAME="${{ steps.check_rotation.outputs.batch_name }}"
-          BATCH_PATH="batches/$BATCH_NAME"
 
-          echo "Moving current/ → $BATCH_PATH using DVC..."
-
-          # DVC move handles both file move and .dvc update atomically
-          dvc move current "$BATCH_PATH"
-
-          # Create fresh empty current/ and track it
-          mkdir -p current
-          dvc add current/
-
-          # Push the NEW batch to R2
-          dvc push
-
-          # --- ROLLING WINDOW CLEANUP ---
-          # Config: Keep only the 350 most recent batches (PRODUCTION)
-          MAX_BATCHES=350
-
-          # Count existing batch .dvc files
-          BATCH_COUNT=$(ls batches/batch_*.dvc 2>/dev/null | wc -l)
-
-          if [ "$BATCH_COUNT" -gt "$MAX_BATCHES" ]; then
-            echo "⚠️ Limit reached ($BATCH_COUNT > $MAX_BATCHES). Pruning oldest batch..."
-
-            # Find oldest batch (sorted by name: batch_001, batch_002, etc.)
-            OLDEST_BATCH=$(ls batches/batch_*.dvc | sort | head -n 1)
-            OLDEST_NAME=$(basename "$OLDEST_BATCH" .dvc)
-
-            echo "Removing $OLDEST_NAME from tracking..."
-
-            # Remove from DVC tracking and delete .dvc file
-            dvc remove "$OLDEST_BATCH"
-
-            # Delete from R2 using garbage collection
-            echo "Running DVC garbage collection to delete from R2..."
-            dvc gc --workspace --cloud --force
-
-            echo "✅ $OLDEST_NAME deleted from R2 and local tracking"
-          else
-            echo "📊 Batch count: $BATCH_COUNT/$MAX_BATCHES (no cleanup needed)"
-          fi
-          # -----------------------------------
-
-          # Clean up flag
-          rm .rotate
 
       - name: Commit after rotation
-        if: steps.check_rotation.outputs.needs_rotation == 'true'
+        if: steps.rotation_manager.outputs.needs_rotation == 'true'
         working-directory: dataset
         run: |
           git config user.name 'GitHub Action'
           git config user.email 'action@github.com'
 
-          BATCH_NAME="${{ steps.check_rotation.outputs.batch_name }}"
+          BATCH_NAME="${{ steps.rotation_manager.outputs.batch_name }}"
 
           # Add new batch .dvc file and current.dvc
           git add current.dvc "batches/$BATCH_NAME.dvc" .gitignore
