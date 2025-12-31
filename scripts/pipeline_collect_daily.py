@@ -8,7 +8,6 @@ import os
 import sys
 import wandb
 from pathlib import Path
-import math
 from PIL import Image
 from youtube_collector import YouTubeClient
 
@@ -49,21 +48,36 @@ def prune_old_wandb_runs(project_name, max_runs):
         print(f"⚠️ W&B Pruning failed: {e}")
 
 def main():
+    # --- TEST SET MODE CHECK ---
+    is_test_mode = os.getenv("COLLECT_FOR_TEST_SET", "false").lower() == "true"
+    
+    if is_test_mode:
+        print("🧪 RUNNING IN TEST SET COLLECTION MODE")
+        output_folder_name = "test_set"
+        target_batch_name = "golden_test_set" # Static name
+        videos_per_cat = 50 # Max possible per page. 200 images -> 4 days.
+    else:
+        output_folder_name = "current"
+        videos_per_cat = 5 # Default
+    
     client = YouTubeClient()
-    current_dir = Path("current")
+    current_dir = Path(output_folder_name)
     batches_dir = Path("batches")
     current_dir.mkdir(exist_ok=True)
 
-    # 1. Setup Versioning
-    next_batch_num = get_next_batch_number(batches_dir)
-    target_batch_name = f"batch_{next_batch_num:03d}"
-    print(f"🎯 Target Version: {target_batch_name}")
+    # 1. Setup Versioning (Skip for Test Set)
+    if not is_test_mode:
+        next_batch_num = get_next_batch_number(batches_dir)
+        target_batch_name = f"batch_{next_batch_num:03d}"
+        print(f"🎯 Target Version: {target_batch_name}")
+    else:
+        print(f"🎯 Targeting: {output_folder_name}")
 
     # 2. Fetch & Download (HQ for R2)
     print("Fetching videos...")
     videos = client.fetch_batch(
         days_ago=7,
-        videos_per_category=5,
+        videos_per_category=videos_per_cat,
         region="US_EU",
         min_subscribers=10000,
         min_views=100,
@@ -78,13 +92,7 @@ def main():
     client.download_thumbnails_bulk(videos, output_dir=str(current_dir))
 
     for video in videos:
-        # User asked for SAME columns as CSV.
-        # batch_version is usually W&B only, but we add it to CSV for consistency.
-        # but if we want it in CSV, we should add it here.
-        # However, the original code had it only in W&B.
-        # User asked for SAME columns. W&B has 'batch_version'.
         video['batch_version'] = target_batch_name
-        # is_clickbait is REMOVED.
 
     metadata_file = current_dir / "metadata.csv"
     client.save_to_csv(videos, filename=str(metadata_file))
@@ -96,7 +104,6 @@ def main():
 
         run = wandb.init(
             project="youtube-thumbnails-dataset",
-            job_type="daily_collection",
             tags=["production", "daily", target_batch_name],
             config={"batch_version": target_batch_name}
         )
@@ -143,7 +150,9 @@ def main():
         print("✅ W&B Logging Complete")
 
         # 4. Prune W&B (Keep in sync with R2)
-        prune_old_wandb_runs("youtube-thumbnails-dataset", max_runs=MAX_WANDB_RUNS)
+        # Skip pruning for test set to avoid unintended deletions of training history
+        if not is_test_mode:
+            prune_old_wandb_runs("youtube-thumbnails-dataset", max_runs=MAX_WANDB_RUNS)
 
     except Exception as e:
         print(f"⚠️ W&B Logging/Pruning failed: {e}")

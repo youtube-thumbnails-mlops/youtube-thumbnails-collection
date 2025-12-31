@@ -39,35 +39,62 @@ jobs:
           dvc remote modify origin --local access_key_id ${{ secrets.R2_ACCESS_KEY_ID }}
           dvc remote modify origin --local secret_access_key ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
-      # Step 1: Pull ONLY current/ (small, max 500 images)
-      - name: Pull current/ from R2
+      # Step 1: Pull state
+      - name: Pull Data State
         working-directory: dataset
-        run: dvc pull current.dvc || echo "No current/ data yet"
+        env:
+          COLLECT_FOR_TEST_SET: ${{ vars.COLLECT_FOR_TEST_SET }}
+        run: |
+          if [ "$COLLECT_FOR_TEST_SET" == "true" ]; then
+            echo "🧪 Test Mode Active: Pulling Golden Test Set..."
+            dvc pull test_set.dvc || echo "⚠️ No existing test set found. A new one will be created."
+          else
+            echo "📦 Training Mode Active: Pulling Current Batch..."
+            dvc pull current.dvc || echo "⚠️ No current data found. Starting fresh."
+          fi
 
       # Step 2: Run collection
       - name: Run daily collection
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          COLLECT_FOR_TEST_SET: ${{ vars.COLLECT_FOR_TEST_SET }}
         working-directory: dataset
         run: python ../scripts/pipeline_collect_daily.py
 
+      # --- BRANCH 1: TEST SET MODE ---
+      - name: Push Test Set
+        if: vars.COLLECT_FOR_TEST_SET == 'true'
+        working-directory: dataset
+        run: |
+          dvc add test_set
+          dvc push
+          
+          git config user.name 'GitHub Action'
+          git config user.email 'action@github.com'
+          git add test_set.dvc .gitignore
+          git diff --quiet && git diff --staged --quiet || \
+            (git commit -m "Update Golden Test Set [skip ci]" && git push)
+
+      # --- BRANCH 2: NORMAL TRAINING MODE (Only if NOT test set) ---
+      
       # Step 3: Manage Rotation (Check + Rotate + Prune)
       - name: Manage Batch Rotation
+        if: vars.COLLECT_FOR_TEST_SET != 'true'
         id: rotation_manager
         working-directory: dataset
         run: python ../scripts/pipeline_rotate_batch.py
 
       # Step 4a: Normal flow (< 500 samples) - Just update current/
       - name: Push current/ to R2 (no rotation)
-        if: steps.rotation_manager.outputs.needs_rotation == 'false'
+        if: vars.COLLECT_FOR_TEST_SET != 'true' && steps.rotation_manager.outputs.needs_rotation == 'false'
         working-directory: dataset
         run: |
           dvc add current/
           dvc push
 
       - name: Commit current.dvc (no rotation)
-        if: steps.rotation_manager.outputs.needs_rotation == 'false'
+        if: vars.COLLECT_FOR_TEST_SET != 'true' && steps.rotation_manager.outputs.needs_rotation == 'false'
         working-directory: dataset
         run: |
           git config user.name 'GitHub Action'
@@ -77,10 +104,8 @@ jobs:
             (git commit -m "Daily collection: $(date +%Y-%m-%d) [skip ci]" && git push)
 
       # Step 4b: Rotation flow (>= 500 samples) - Archive batch + reset current/
-
-
       - name: Commit after rotation
-        if: steps.rotation_manager.outputs.needs_rotation == 'true'
+        if: vars.COLLECT_FOR_TEST_SET != 'true' && steps.rotation_manager.outputs.needs_rotation == 'true'
         working-directory: dataset
         run: |
           git config user.name 'GitHub Action'
