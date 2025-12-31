@@ -23,7 +23,7 @@ cd "$DATASET_DIR"
 
 # 1. Remove local data
 echo "📂 Removing local data..."
-rm -rf current batches .dvc/cache
+rm -rf current batches test_set .dvc/cache
 echo "   ✅ Local data removed"
 echo ""
 
