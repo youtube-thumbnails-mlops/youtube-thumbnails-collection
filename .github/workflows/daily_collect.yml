@@ -34,7 +34,7 @@ jobs:
       - name: Configure DVC
         working-directory: dataset
         run: |
-          pip install dvc[s3]
+          pip install --upgrade "dvc[s3]"
           dvc remote modify origin --local endpointurl ${{ secrets.R2_ENDPOINT }}
           dvc remote modify origin --local access_key_id ${{ secrets.R2_ACCESS_KEY_ID }}
           dvc remote modify origin --local secret_access_key ${{ secrets.R2_SECRET_ACCESS_KEY }}
