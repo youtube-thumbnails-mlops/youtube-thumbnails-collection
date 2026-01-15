@@ -3,7 +3,7 @@ name: Daily Data Collection
 on:
   schedule:
     - cron: '0 8 * * *'  # 8 AM UTC daily
-  workflow_dispatch:
+  workflow_dispatch: # Enable manual trigger
 
 jobs:
   collect:
