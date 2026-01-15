@@ -13,7 +13,7 @@ import random
 from youtube_collector import YouTubeClient
 
 # CONSTANTS
-BATCH_LIMIT = 1000
+BATCH_LIMIT = 500
 MAX_WANDB_RUNS = 150  # Match R2 window
 
 def count_samples(metadata_file):
